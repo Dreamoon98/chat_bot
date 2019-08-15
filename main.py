@@ -7,35 +7,61 @@ import random
 from datetime import datetime
 from iexfinance.stocks import get_historical_data
 from iexfinance.stocks import Stock
+import yfinance as yf
+from datetime import datetime
 def trainer():
     trainer = Trainer(config.load("config_spacy.yml"))
-    training_data = load_data('training_data_rasa.json')
+    training_data = load_data('training.md')
     interpreter = trainer.train(training_data)
     return interpreter
 
 interpreter=trainer()
-
+g_detail=None
+g_company=None
 #state
 INIT=0
 INTRO=1
-ASK=2
-
-THANK=3
+ASK_COMPANY=2
+ASK_DETAIL=3
+THANK=4
 
 bot_re = {
     'greet':"Nice to meet you! I'm the robot that can get stock information to you! Which stock do you want to know?",
 #    'get_company':"Which stock do you want to know?",
     'get_detail':"What do you want to know about the stock, price, volume or market cap?",
     'thank':"I'm glad to help you!",
-    'open':"Open price on {}: {}",
-    'volume':"Volume on {}: {}",
-    'cap':"Market cap on {}: {}",
-    'current_price':"Current price on {}: {}",
+    'open':"Open price: {} ",
+    'volume':"Volume on {0[0]} UTC: {0[1]} ",
+    'cap':"Market cap on {0[0]} UTC: {0[1]} ",
+    'current_price':"Current price on {0[0]} UTC: {0[1]} ",
     'default':"I'm sorry but I'm not sure how to help you."
 }
 
-policy_rules = {
+policy_rules={
+    (INIT, "none"): INIT,
+    (INIT, "greet"): INTRO,
+    (INIT, "get_company"):ASK_COMPANY,
+    (INIT, "get_detail"):ASK_DETAIL,
+    (INIT, "thank"):THANK,
 
+    (INTRO, "greet"):INTRO,
+    (INTRO, "get_company"): ASK_COMPANY,
+    (INTRO, "get_detail"): ASK_DETAIL,
+    (INTRO, "thank"): THANK,
+
+    (ASK_COMPANY, "get_company"): ASK_DETAIL,
+    (ASK_COMPANY, "get_detail"): ASK_DETAIL,
+    (ASK_COMPANY, "thank"): THANK,
+
+    (ASK_DETAIL, "get_detail"): ASK_DETAIL,
+    (ASK_COMPANY, "thank"): THANK,
+
+}
+
+
+'''
+policy_rules_TMP = {
+    
     (INIT, "none"): (INIT, bot_re['default']),
     (INIT, "greet"): (INTRO,bot_re['greet']),
     (INIT, "get_stock"): (ASK,bot_re['get_detail']),
@@ -68,36 +94,72 @@ policy_rules = {
     (THANK, "cap"): (ASK, bot_re['cap']),
     (THANK, "current_price"): (ASK, bot_re['current_price']),
     (THANK, "thank"): (THANK, bot_re['thank']),
-
-
+    
+    
+    (INIT, "none"): (INIT, bot_re['default']),
+    (INIT, "greet"): (INTRO,bot_re['greet']),   
 }
+'''
 
 
-def get_entity(self, message):
-    if not self.interpreter.parse(message)['entities'] is None:
-        return None
+def get_entity(message):
+    entities = interpreter.parse(message)['entities']
+    params = {}
+    # Fill the dictionary with entities
+    for ent in entities:
+        params[ent["entity"]] = str(ent["value"])
+    return params
 
-    if self.interpreter.parse(message)['entities'][0]['entity'] == 'company':
-        return self.interpreter.parse(message)['entities'][0]['value']
 
 def get_intent(message):
-    return interpreter.parse(message)['intent']['name']
+    intent = interpreter.parse(message)['intent']
+    params = {}
+    params[intent['name']] = intent['confidence']
+    return params
 def interpret(message):
-    i_p=interpreter.parse(message)["intent"]["name"]
-    intent=i_p["intent"]["name"]
-    entities=i_p["entities"]
+    intent=get_intent(message)
+    if 'greet' in intent:
+        return 'greet'
+    ents = get_entity(message)
+    if 'company' in ents:
+        global g_company
+        g_company = ents['company']
+        return 'get_company'
+    if 'details'in ents:
+        global g_detail
+        g_detail=ents['detail']
+        return 'get_detail'
 
-
-    msg=message.lower()
-    if 'open'in msg:
-        return 'open'
-    if 'volume'or 'vol' in msg:
-        return 'volume'
-    if 'cap' or 'market cap' or'marketcap' or 'capacity' or 'market capacity'in msg:
-        return 'cap'
-    if 'price' in msg:
-        return 'current_price'
     return 'none'
+
+def get_open(company):
+    a = yf.Ticker(company)
+    return a.info['regularMarketOpen']
+
+def get_c_price(company):
+    a = yf.Ticker(company)
+    i = a.info
+    p = i['regularMarketPrice']
+    t = i['regularMarketTime']
+    utc_time = datetime.utcfromtimestamp(t)
+    return utc_time, p
+
+def get_volume(company):
+    a = yf.Ticker(company)
+    i = a.info
+    v = i['regularMarketVolume']
+    t = i['regularMarketTime']
+    utc_time = datetime.utcfromtimestamp(t)
+    return utc_time, v
+
+def get_cap(company):
+    a = yf.Ticker(company)
+    i = a.info
+    c = i['marketCap']
+    t = i['regularMarketTime']
+    utc_time = datetime.utcfromtimestamp(t)
+    return utc_time, c
+
 def send_message(policy, state, message):
     print("USER : {}".format(message))
     new_state, response = respond(policy, state, message)
@@ -105,6 +167,25 @@ def send_message(policy, state, message):
     return new_state
 
 def respond(policy, state, message):
-    pass
+    it=interpret(message)
+    new_state=policy[(state,it)]
 
+    if it=='greet':
+        res=bot_re['greet']
+    if it=='thank':
+        res=bot_re['thank']
+    if it=='get_company':
+        res=bot_re['get_detail']
+    if it=='get_detail':
+        if g_detail=='open' or g_detail=='open price' or g_detail== 'open_price':
+            res=bot_re['open'].format(get_open(g_company))
+        if g_detail=='price' or g_detail=='current price':
+            res=bot_re['current_price'].format(get_c_price(g_company))
+        if g_detail=='volume' :
+            res=bot_re['volume'].format(get_volume(g_company))
+        if g_detail=='cap' or g_detail=='market cap' or g_detail== 'market_cap':
+            res=bot_re['cap'].format(get_cap(g_company))
+    if it=='none':
+        res=bot_re['default']
 
+    return new_state, res
